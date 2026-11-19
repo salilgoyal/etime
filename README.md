@@ -26,6 +26,15 @@ Local changes on top of the upstream repo:
 - **Icon.** A stopwatch in the overlay's warm-paper palette (`app/icon.png`,
   drawn by `app/make_icon.py`), used for etime.app and the Dock.
 
+**Idea, not done yet: drop the Accessibility permission.** It's only needed
+because `hotkeys.py` catches the ⌃⌥⌘ chords with an NSEvent global monitor,
+which sees every keystroke system-wide. Carbon's `RegisterEventHotKey` (via
+ctypes; PyObjC doesn't wrap it) registers just those chords and needs no
+permission. It would also stop the chords leaking into the front app, since the
+monitor can only observe them, and the 3-second monitor health check would go
+away. Roughly 100 lines in `hotkeys.py`, with `register()` keeping its
+signature; command mode is unaffected (its local monitor needs no permission).
+
 ## Features
 
 - **Floating overlay window** - Always on top at top-right, shows all active tasks
@@ -398,7 +407,13 @@ The dashboard integrates distraction data from `~/Dev/DistractionCount/distracti
 rebuild. Output goes to `~/.etime/etime.log`. On first launch macOS asks to
 grant **etime** Accessibility (System Settings → Privacy & Security →
 Accessibility); enable it and open the app again. Rebuild only if you move
-the repo, and expect to re-grant Accessibility after a rebuild.
+the repo.
+
+If etime asks for Accessibility while its switch in Settings is already on,
+the grant belongs to an older build: the app is ad-hoc signed, and changing
+`app/launcher.c` or `app/icon.png` changes its signature. Run
+`tccutil reset Accessibility local.etime.launcher`, open etime.app, and allow it
+again.
 
 ## Tips
 

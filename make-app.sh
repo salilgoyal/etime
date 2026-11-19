@@ -5,8 +5,14 @@
 #   ./make-app.sh /Applications    # or somewhere else
 #
 # The app runs the code in this folder, so edits take effect on the next launch.
-# Rebuild only if you move the repo. A rebuild changes the app's signature, so
-# macOS will ask for Accessibility again.
+# Rebuild only if you move the repo.
+#
+# The app is ad-hoc signed, and macOS ties the Accessibility grant to that exact
+# signature. Rebuilding unchanged gives the same signature and keeps the grant;
+# changing app/launcher.c or app/icon.png doesn't, and leaves a stale "etime"
+# switch in Settings that looks on but isn't. After such a rebuild, run
+#   tccutil reset Accessibility local.etime.launcher
+# then open etime.app and allow it again.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
