@@ -95,3 +95,14 @@ KEY_E = 14      # E key - Edit focused task's name
 KEY_W = 13      # W key - Mark/unmark the focused task as waiting on something external
 KEY_EQUAL = 24  # = / + key - Add elapsed minutes to focused task
 KEY_MINUS = 27  # - / _ key - Remove elapsed minutes from focused task
+
+# Command mode: ⌃⌥⌘Space brings etime to the front, where single keys act on the
+# focused task (see COMMAND_KEYS in main.py). Esc hands focus back.
+KEY_SPACE = 49
+KEY_ESCAPE = 53
+KEY_J = 38
+KEY_K = 40
+KEY_Z = 6
+# Number row 1-9 (macOS virtual key codes aren't sequential).
+KEY_DIGITS = {18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9}
+COLOR_COMMAND_BORDER = "#3F6493"  # Slate blue window border while command mode is on

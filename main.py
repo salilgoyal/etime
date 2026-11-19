@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """etime - Evolved Timer for productivity tracking."""
 
+import os
 import sys
+from pathlib import Path
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from PyQt6.QtWidgets import QApplication, QMessageBox, QDialog, QVBoxLayout, QLabel
 from PyQt6.QtCore import QObject, QTimer, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 from AppKit import NSWorkspace, NSApplication
 from Foundation import NSObject
 import objc
@@ -73,6 +75,7 @@ from time_adjust_dialog import TimeAdjustDialog
 from hotkeys import HotkeyManager
 from task_tree import apply_move, plan_move, subtree_ids
 from config import MIN_TASK_MINUTES, MAX_TASK_MINUTES
+from config import KEY_SPACE, KEY_ESCAPE, KEY_J, KEY_K, KEY_Z, KEY_DIGITS
 from config import KEY_N, KEY_P, KEY_C, KEY_Q, KEY_S, KEY_U, KEY_H, KEY_T, KEY_F, KEY_UP, KEY_DOWN, KEY_A, KEY_LEFT, KEY_RIGHT, KEY_G, KEY_SLASH, KEY_E, KEY_W, KEY_EQUAL, KEY_MINUS, DEFAULT_TASK_MINUTES, DETERRED_FILE, CATEGORY_ESTIMATE_SECONDS
 from sounds import play_alarm_loop, stop_alarm, play_success_sound, play_ambitious_success_sound
 import dashboard
@@ -98,6 +101,27 @@ class SleepObserver(NSObject):
             self.on_wake()
 
 
+class AppActivationObserver(NSObject):
+    """Remembers the last app other than etime to come to the front.
+
+    In memory only, never written anywhere: it's where Esc in command mode (and
+    a dialog opened from command mode) hands focus back to, since by then the
+    frontmost app is etime itself.
+    """
+
+    def init(self):
+        self = objc.super(AppActivationObserver, self).init()
+        if self is None:
+            return None
+        self.last_external_app = None
+        return self
+
+    def handleActivate_(self, notification):
+        app = notification.userInfo().get("NSWorkspaceApplicationKey")
+        if app is not None and app.processIdentifier() != os.getpid():
+            self.last_external_app = app
+
+
 class HelpDialog(QDialog):
     """Simple popup showing all hotkeys."""
 
@@ -114,6 +138,20 @@ class HelpDialog(QDialog):
         layout.setContentsMargins(20, 16, 20, 16)
 
         hotkeys = [
+            ("⌃⌥⌘Space", "Command mode — then single keys:"),
+            ("  Space", "Start / pause, then back to your app"),
+            ("  Esc", "Back to your app"),
+            ("  ↑↓ / K J", "Focus previous / next task"),
+            ("  1–9", "Focus task #N"),
+            ("  N C E", "New / complete / edit"),
+            ("  W Q Z", "Waiting / quiet alarms / undo"),
+            ("  + −", "Add / remove time"),
+            ("  /", "Search"),
+            ("  T F A", "Subtask / fold / show all"),
+            ("  S ⇧S", "Stash / unstash"),
+            ("  G ?", "Log deterred distraction / this help"),
+            ("", ""),
+            ("Anywhere:", ""),
             ("⌃⌥⌘N", "New task"),
             ("⌃⌥⌘P", "Toggle start / pause"),
             ("⌃⌥⌘W", "Waiting on something external (pauses + starts a wait clock)"),
@@ -137,7 +175,7 @@ class HelpDialog(QDialog):
 
         mono = QFont("Menlo", 13)
         for key, desc in hotkeys:
-            label = QLabel(f"{key}    {desc}")
+            label = QLabel(f"{key:<12}{desc}")
             label.setFont(mono)
             layout.addWidget(label)
 
@@ -220,6 +258,41 @@ class AppController(QObject):
         self.hotkey_manager.register(KEY_MINUS, self.subtract_time)
         self.hotkey_manager.register(KEY_MINUS, self.subtract_time, shift=True)
 
+        # ⌃⌥⌘Space: command mode, where single keys act on the focused task.
+        self.hotkey_manager.register(KEY_SPACE, self.toggle_command_mode)
+        self.hotkey_manager.command_mode_active = self._is_command_mode
+        for keycode, shift, callback in [
+            (KEY_SPACE, False, self._toggle_and_leave),
+            (KEY_ESCAPE, False, self.exit_command_mode),
+            (KEY_UP, False, self.focus_up),
+            (KEY_K, False, self.focus_up),
+            (KEY_DOWN, False, self.focus_down),
+            (KEY_J, False, self.focus_down),
+            (KEY_N, False, self.new_task),
+            (KEY_C, False, self.complete_task),
+            (KEY_E, False, self.edit_task),
+            (KEY_W, False, self.toggle_waiting),
+            (KEY_Q, False, self.dismiss_alarm),
+            (KEY_Z, False, self.undo),
+            (KEY_U, False, self.undo),
+            (KEY_EQUAL, False, self.add_time),
+            (KEY_EQUAL, True, self.add_time),
+            (KEY_MINUS, False, self.subtract_time),
+            (KEY_MINUS, True, self.subtract_time),
+            (KEY_SLASH, False, self.open_search),
+            (KEY_SLASH, True, self.show_help),   # ?
+            (KEY_H, False, self.show_help),
+            (KEY_T, False, self.toggle_subtask),
+            (KEY_F, False, self.toggle_collapse),
+            (KEY_A, False, self.toggle_show_all),
+            (KEY_S, False, self.stash_task),
+            (KEY_S, True, self.unstash_task),
+            (KEY_G, False, self.log_deterred),
+        ]:
+            self.hotkey_manager.register_command_key(keycode, callback, shift=shift)
+        for keycode, n in KEY_DIGITS.items():
+            self.hotkey_manager.register_command_key(keycode, lambda n=n: self.overlay.focus_nth(n))
+
         if not self.hotkey_manager.start():
             # Show error dialog if hotkeys fail
             QMessageBox.critical(
@@ -271,6 +344,19 @@ class AppController(QObject):
             self._sleep_observer, 'handleWake:',
             'NSWorkspaceDidWakeNotification', None)
         print("Sleep/wake observer registered")
+
+        # Track the last app in front other than etime (see AppActivationObserver).
+        self._activation_observer = AppActivationObserver.alloc().init()
+        self._activation_observer.last_external_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        nc.addObserver_selector_name_object_(
+            self._activation_observer, 'handleActivate:',
+            'NSWorkspaceDidActivateApplicationNotification', None)
+
+        # Command-mode border follows which etime window (if any) has the keyboard.
+        # Deferred a tick so QApplication.activeWindow() has caught up.
+        app = QApplication.instance()
+        app.focusWindowChanged.connect(lambda _w: QTimer.singleShot(0, self._refresh_command_indicator))
+        app.applicationStateChanged.connect(lambda _s: QTimer.singleShot(0, self._refresh_command_indicator))
 
         # Launch dashboard server
         dashboard.launch()
@@ -340,7 +426,7 @@ class AppController(QObject):
         print("New task hotkey pressed")
 
         # Store previously focused app for focus restoration
-        self.previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        self.previous_app = self._external_app()
 
         self.task_dialog.reset()
 
@@ -483,6 +569,48 @@ class AppController(QObject):
             self.previous_app.activateWithOptions_(1)  # NSApplicationActivateIgnoringOtherApps
             self.previous_app = None
             print("Focus restored to previous app")
+
+    def _external_app(self):
+        """The app to hand focus back to: the frontmost one, unless that's etime."""
+        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if front is not None and front.processIdentifier() != os.getpid():
+            return front
+        return self._activation_observer.last_external_app
+
+    def _is_command_mode(self) -> bool:
+        """Command mode is simply: etime is in front and the overlay (or help) has
+        the keyboard. So ⌘Tab-ing to etime works too, and any dialog with a text
+        field switches it off for as long as it's open.
+        """
+        app = QApplication.instance()
+        return (app.applicationState() == Qt.ApplicationState.ApplicationActive
+                and QApplication.activeModalWidget() is None
+                and QApplication.activeWindow() in (self.overlay, self.help_dialog))
+
+    def _refresh_command_indicator(self):
+        self.overlay.set_command_mode(self._is_command_mode())
+
+    def toggle_command_mode(self):
+        """⌃⌥⌘Space: bring the overlay forward to take single-key commands, or leave."""
+        if self._is_command_mode():
+            self.exit_command_mode()
+            return
+        if not self.overlay_visible:
+            self.toggle_overlay()
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self.overlay.raise_()
+        self.overlay.activateWindow()
+
+    def exit_command_mode(self):
+        """Hand focus back to the app you were in before command mode."""
+        app = self._activation_observer.last_external_app
+        if app is not None:
+            app.activateWithOptions_(1)  # NSApplicationActivateIgnoringOtherApps
+
+    def _toggle_and_leave(self):
+        """Space in command mode: start/pause the focused task, then go back."""
+        self.toggle_start_pause()
+        self.exit_command_mode()
 
     def toggle_start_pause(self):
         """Toggle between start and pause for focused task."""
@@ -1052,7 +1180,7 @@ class AppController(QObject):
         Opens even with no tasks: typing a name and pressing Enter with no match
         offers to create a new task with that name.
         """
-        self.previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        self.previous_app = self._external_app()
         self.search_dialog.set_tasks(self.tasks)
         self.search_dialog.show()
         self.search_dialog.raise_()
@@ -1125,7 +1253,7 @@ class AppController(QObject):
         if not task:
             print("No task focused to edit")
             return
-        self.previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        self.previous_app = self._external_app()
         self._editing_task_id = task.id
 
         by_id = {t.id: t for t in self.tasks}
@@ -1258,7 +1386,7 @@ class AppController(QObject):
         if not task:
             print(f"No task focused to {'add time to' if adding else 'remove time from'}")
             return
-        self.previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        self.previous_app = self._external_app()
         self._time_adjust_task_id = task.id
         print(f"{'Adding time to' if adding else 'Removing time from'} task: {task.name}")
         self.time_adjust_dialog.open_for(task.name, adding)
@@ -1333,6 +1461,8 @@ def main():
     """Main entry point."""
     app = QApplication(sys.argv)
     app.setApplicationName("etime")
+    # Sets the Dock icon too, replacing Python's rocket.
+    app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "app" / "icon.png")))
 
     # CRITICAL FIX: Prevent Qt from exiting when all windows close
     # Tool windows don't count as "windows" for Qt, so when dialog closes,

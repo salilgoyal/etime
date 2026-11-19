@@ -1,8 +1,8 @@
 """Global hotkey registration using NSEvent global monitor."""
 
-from typing import Dict, Callable
+from typing import Callable, Dict, Optional
 from AppKit import NSEvent, NSKeyDownMask
-from ApplicationServices import AXIsProcessTrusted
+from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
 
 # Modifier flag masks (from NSEvent)
 NSControlKeyMask = 1 << 18
@@ -20,6 +20,12 @@ class HotkeyManager:
     def __init__(self):
         """Initialize hotkey manager."""
         self.callbacks: Dict[tuple[int, bool], Callable] = {}
+        # Bare (unmodified) keys, live only while command_mode_active() is true.
+        # They can only ever fire through the local monitor: the global monitor
+        # can observe keys typed into other apps but not swallow them, so a bare
+        # key there would also reach the app you're typing in.
+        self.command_keys: Dict[tuple[int, bool], Callable] = {}
+        self.command_mode_active: Optional[Callable[[], bool]] = None
         self._monitor = None
         # Local monitor fires for etime's OWN windows (the global monitor never
         # does), so hotkeys still work when an etime window is frontmost.
@@ -36,6 +42,10 @@ class HotkeyManager:
         """
         self.callbacks[(keycode, shift)] = callback
 
+    def register_command_key(self, keycode: int, callback: Callable, shift: bool = False) -> None:
+        """Register a bare key that acts only while etime is in command mode."""
+        self.command_keys[(keycode, shift)] = callback
+
     def start(self) -> bool:
         """
         Start listening for hotkeys.
@@ -43,7 +53,9 @@ class HotkeyManager:
         Returns:
             True if successful, False if accessibility permissions not granted.
         """
-        if not AXIsProcessTrusted():
+        # With the prompt option, macOS also adds the app to the Accessibility
+        # list (as "etime" when launched from etime.app) and offers to open it.
+        if not AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True}):
             print("Error: Accessibility permissions not granted.")
             print("Please enable etime in System Settings → Privacy & Security → Accessibility")
             return False
@@ -102,8 +114,35 @@ class HotkeyManager:
         None to consume it. We consume matched hotkeys so they don't also type
         into our own dialogs.
         """
-        matched = self._dispatch(event)
-        return None if matched else event
+        if self._dispatch(event):
+            return None
+        if self._dispatch_command_key(event):
+            return None
+        return event
+
+    def _dispatch_command_key(self, event) -> bool:
+        """Handle a bare key in command mode. Returns True to swallow the event.
+
+        Every unmodified key is swallowed in command mode, bound or not: the
+        overlay has nothing to type into, so an unbound key would only beep.
+        Keys with ⌘/⌃/⌥ pass through so ⌘Tab, ⌘Q and friends keep working.
+        """
+        try:
+            if self.command_mode_active is None or not self.command_mode_active():
+                return False
+            flags = event.modifierFlags()
+            if flags & (NSControlKeyMask | NSAlternateKeyMask | NSCommandKeyMask):
+                return False
+            callback = self.command_keys.get((event.keyCode(), bool(flags & NSShiftKeyMask)))
+            if callback:
+                try:
+                    callback()
+                except Exception as e:
+                    print(f"Error in command key callback for keycode {event.keyCode()}: {e}")
+            return True
+        except Exception as e:
+            print(f"Error in command key handler: {e}")
+            return False
 
     def check_and_repair(self) -> None:
         """Health check — recreate monitor if it was lost."""

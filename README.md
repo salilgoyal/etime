@@ -2,6 +2,30 @@
 
 A macOS floating overlay timer app for productivity tracking. Track time spent on concurrent tasks with estimated vs actual time tracking.
 
+## Salil's changes
+
+Local changes on top of the upstream repo:
+
+- **Command mode (⌃⌥⌘Space).** Brings etime to the front so single keys act on
+  the focused task: Space starts/pauses and returns you to your app, Esc returns,
+  ↑↓/J K move, 1–9 jump, N/C/E new/complete/edit, and so on (full table under
+  [Command mode](#command-mode)). It's on whenever the overlay has the keyboard,
+  so ⌘Tab-ing to etime works too; the overlay border turns blue while it's on.
+  The old ⌃⌥⌘ hotkeys are unchanged. Dialogs opened from command mode hand
+  focus back to the app you came from, not to etime.
+- **etime.app.** `./make-app.sh` builds `~/Applications/etime.app`, a small
+  compiled launcher (`app/launcher.c`) that runs this folder's `main.py` with
+  its `.venv`, so edits apply on the next launch with no rebuild. Output goes
+  to `~/.etime/etime.log`. Accessibility is granted to "etime", and the app now
+  asks for it on first launch instead of only failing. Replaces the old
+  PyInstaller instructions, which broke the dashboard (it starts a separate
+  Python process).
+- **Quitting works.** ⌘Q and Dock → Quit used to be silently cancelled: the
+  overlay refused every close, and Qt 6 aborts a quit if any window refuses.
+  The overlay now lets closes sent during a quit through.
+- **Icon.** A stopwatch in the overlay's warm-paper palette (`app/icon.png`,
+  drawn by `app/make_icon.py`), used for etime.app and the Dock.
+
 ## Features
 
 - **Floating overlay window** - Always on top at top-right, shows all active tasks
@@ -54,8 +78,34 @@ A macOS floating overlay timer app for productivity tracking. Track time spent o
 
 ## Usage
 
+### Command mode
+
+Press **⌃⌥⌘Space** from any app. etime comes to the front, the overlay border
+turns blue, and single keys act on the focused task:
+
+| Key | Action |
+|-----|--------|
+| Space | Start / pause, then return to the app you were in |
+| Esc | Return to the app you were in |
+| ↑ ↓ / K J | Move focus |
+| 1–9 | Focus task #N |
+| N / C / E | New / complete / edit |
+| W / Q / Z | Waiting / quiet alarms / undo |
+| + / − | Add / remove time |
+| / | Search |
+| T / F / A | Toggle subtask / fold / show all |
+| S / ⇧S | Stash / unstash |
+| G / ? | Log deterred distraction / help |
+
+Command mode is just "etime is in front and the overlay has the keyboard", so
+⌘Tab-ing to etime works too, and it switches off while a dialog is open.
+Single keys only work there because the global monitor can see keys typed
+into other apps but can't stop them, so a bare Space bound globally would
+also type a space wherever you are.
+
 ### Global Hotkeys
 
+These work from any app without entering command mode.
 All hotkeys use: **Control (⌃) + Option (⌥) + Command (⌘)**
 
 | Hotkey | Action |
@@ -337,16 +387,18 @@ Opens a dashboard on port 5174 filtered to that date.
 
 The dashboard integrates distraction data from `~/Dev/DistractionCount/distraction_count.txt` (one timestamp per line in `YYYY-MM-DD HH:MM:SS` format).
 
-## Building Standalone App
-
-To create a standalone macOS application:
+## Building the App
 
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed --name "etime" main.py
+./make-app.sh                 # builds ~/Applications/etime.app
 ```
 
-The app will be at `dist/etime.app` - you can drag it to Applications.
+`etime.app` is a small launcher that runs this folder's `main.py` with its
+`.venv`, so code changes take effect the next time you open it with no
+rebuild. Output goes to `~/.etime/etime.log`. On first launch macOS asks to
+grant **etime** Accessibility (System Settings → Privacy & Security →
+Accessibility); enable it and open the app again. Rebuild only if you move
+the repo, and expect to re-grant Accessibility after a rebuild.
 
 ## Tips
 

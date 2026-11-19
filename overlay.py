@@ -15,7 +15,7 @@ from config import (
     COLOR_FOCUSED, COLOR_OVERTIME, COLOR_PAUSED, COLOR_NORMAL, COLOR_UNFOCUSED, COLOR_AMBITIOUS,
     COLOR_WINDOW_BG, COLOR_WINDOW_BORDER, COLOR_CARD_BG, COLOR_CARD_BORDER,
     COLOR_FOCUSED_BORDER, COLOR_RECENT, COLOR_LAST_RUN_BG, LAST_RUN_MIN_SECONDS,
-    COLOR_WAITING, COLOR_WAITING_BG,
+    COLOR_WAITING, COLOR_WAITING_BG, COLOR_COMMAND_BORDER,
     FONT_FAMILY_MONO, FONT_FAMILY_SERIF, FONT_SIZE,
     FOCUS_INDICATOR, NO_FOCUS_INDICATOR,
     FADE_IN_DURATION_MS, FADE_OUT_DURATION_MS
@@ -338,19 +338,28 @@ class OverlayWindow(QWidget):
         )
 
         # Window styling — warm cream backdrop, soft brown border, rounder corners
-        self.setStyleSheet(f"""
-            OverlayWindow {{
-                background-color: {COLOR_WINDOW_BG};
-                border: 2px solid {COLOR_WINDOW_BORDER};
-                border-radius: 14px;
-            }}
-        """)
+        self.set_command_mode(False)
 
         # macOS-specific: ensure window stays visible
         self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
 
         # Position at top-right (will be adjusted after window is shown with correct size)
         self.position_at_top_right()
+
+    def set_command_mode(self, on: bool):
+        """Swap the window border: slate blue while command mode is on.
+
+        A border is the only cue that fits: the layout's index math assumes
+        show_all_label is its only non-task widget, so no banner row.
+        """
+        color, width = (COLOR_COMMAND_BORDER, 3) if on else (COLOR_WINDOW_BORDER, 2)
+        self.setStyleSheet(f"""
+            OverlayWindow {{
+                background-color: {COLOR_WINDOW_BG};
+                border: {width}px solid {color};
+                border-radius: 14px;
+            }}
+        """)
 
     def position_at_top_right(self):
         """Position window at top-right corner of screen."""
@@ -900,8 +909,18 @@ class OverlayWindow(QWidget):
             return
 
         # Update focused index with wrap-around
+        self._set_focus(visible, (self.focused_index + direction) % len(visible))
+
+    def focus_nth(self, n: int):
+        """Focus the n-th visible task (1-based); ignored past the end."""
+        visible = self._visible_tasks()
+        if 1 <= n <= len(visible):
+            self._set_focus(visible, n - 1)
+
+    def _set_focus(self, visible: List[Task], new_index: int):
+        """Move the focus highlight from the current task to visible[new_index]."""
         old_index = self.focused_index
-        self.focused_index = (self.focused_index + direction) % len(visible)
+        self.focused_index = new_index
 
         # Update widget displays
         if 0 <= old_index < len(visible):
@@ -922,7 +941,16 @@ class OverlayWindow(QWidget):
         return visible[self.focused_index]
 
     def closeEvent(self, event):
-        """Handle window close event - prevent accidental closes."""
+        """Refuse window-manager closes, but let a quit (⌘Q, Dock → Quit) through.
+
+        Qt 6 cancels a quit if any window refuses to close, so ignoring every
+        close made the app unquittable except by killing it. Closes the user
+        triggers on the window itself arrive as spontaneous events; the ones Qt
+        sends while quitting don't.
+        """
+        if not event.spontaneous():
+            event.accept()
+            return
         print("WARNING: Overlay window close event triggered!")
         event.ignore()  # Don't allow closing the main overlay
 
